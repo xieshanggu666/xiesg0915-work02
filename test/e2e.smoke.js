@@ -816,6 +816,63 @@ function check(name, cond) {
     !$$('#stapleList .staple-card').some(c => /测试大米/.test(c.textContent)) &&
     !$$('#shoppingList .shop-card').some(c => /测试大米/.test(c.textContent)));
 
+  // 9f. 追溯筛选与分页：类型 / 关键字 / 时间范围 + 加载更多
+  $$('.tab[data-view]').find(t => t.dataset.view === 'history').click();
+  const totalAudit = window.__store.auditEntries().length;
+  check('追溯总条数超过一批（分页生效前提）', totalAudit > 30);
+  check('类型下拉按组生成选项', $$('#auditType optgroup').length >= 5 &&
+    $$('#auditType option').some(o => o.value === 'event.add'));
+  check('首批只渲染一批 30 条', $$('#auditList .audit-item').length === 30);
+  check('加载更多按钮可见且标注剩余条数', !$('#auditMore').hidden &&
+    $('#auditMore').textContent.includes('还有 ' + (totalAudit - 30) + ' 条'));
+  check('汇总行显示总条数', $('#auditSummary').textContent.includes('共 ' + totalAudit + ' 条'));
+  $('#auditMore').click();
+  check('加载更多后渲染第二批', $$('#auditList .audit-item').length === Math.min(60, totalAudit));
+  // 翻到最旧：2026-01 合并进来的旧记录必须能翻到，而不是只看得到最近一批
+  while (!$('#auditMore').hidden) $('#auditMore').click();
+  check('翻到底后能看到最旧的合并记录', /一月的旧食材/.test($('#auditList').textContent));
+  check('全部加载后加载更多按钮隐藏', $('#auditMore').hidden);
+
+  // 类型筛选：只看期限事件
+  $('#auditType').value = 'event.add';
+  fire($('#auditType'), 'change');
+  check('类型筛选后每条都是期限事件', $$('#auditList .audit-item').length > 0 &&
+    $$('#auditList .audit-item').every(el => /记录期限事件/.test(el.textContent)));
+  check('类型筛选后汇总显示筛选/总数', /符合筛选 \d+ 条（全部共 \d+ 条）/.test($('#auditSummary').textContent));
+
+  // 关键字筛选：与类型组合，再单独使用
+  $('#auditKeyword').value = '同日测试虾';
+  fire($('#auditKeyword'), 'input');
+  check('关键字+类型组合筛选均命中', $$('#auditList .audit-item').length > 0 &&
+    $$('#auditList .audit-item').every(el => /同日测试虾/.test(el.textContent) && /记录期限事件/.test(el.textContent)));
+  $('#auditType').value = 'all';
+  fire($('#auditType'), 'change');
+  check('关键字筛选命中详情文本', $$('#auditList .audit-item').length > 0 &&
+    $$('#auditList .audit-item').every(el => /同日测试虾/.test(el.textContent)));
+  $('#auditKeyword').value = '不存在的食材xyz';
+  fire($('#auditKeyword'), 'input');
+  check('无结果关键字给出空态提示', $$('#auditList .audit-item').length === 0 &&
+    /没有符合筛选条件/.test($('#auditList').textContent));
+  $('#auditKeyword').value = '';
+  fire($('#auditKeyword'), 'input');
+  check('筛选变化后翻页回到第一批', $$('#auditList .audit-item').length === 30 && !$('#auditMore').hidden);
+
+  // 时间范围筛选：2026-01 只命中合并进来的旧记录
+  $('#auditFrom').value = '2026-01-01';
+  fire($('#auditFrom'), 'change');
+  $('#auditTo').value = '2026-01-31';
+  fire($('#auditTo'), 'change');
+  check('时间范围筛选只命中一月旧记录', $$('#auditList .audit-item').length === 2 &&
+    $$('#auditList .audit-item').every(el => /一月的旧食材/.test(el.textContent)));
+  check('范围外记录被过滤', !/黄瓜/.test($('#auditList').textContent));
+
+  // 重置：清空全部筛选并回到第一批
+  $('#auditReset').click();
+  check('重置后回到未筛选首批', $$('#auditList .audit-item').length === 30 &&
+    $('#auditSummary').textContent.includes('共 ' + totalAudit + ' 条'));
+  check('重置后筛选控件已清空', $('#auditType').value === 'all' && $('#auditKeyword').value === '' &&
+    $('#auditFrom').value === '' && $('#auditTo').value === '');
+
   // 10. 持久化：刷新后数据仍在
   const persisted = JSON.parse(window.localStorage.getItem('freshkeeper:v1'));
   check('localStorage 持久化（含待购清单）', persisted.items.length >= 10 &&

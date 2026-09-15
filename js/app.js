@@ -11,6 +11,8 @@
   var IDENTITY_KEY = 'freshkeeper:member';
   // 方案页上次选择的就餐成员（纯本机便利记忆，存在成员不存在时自动剔除）
   var DINERS_KEY = 'freshkeeper:diners';
+  // 追溯视图每批渲染条数：先出一批，点「加载更多」再翻下一批
+  var AUDIT_PAGE = 30;
   function getIdentity() {
     try { return (localStorage.getItem(IDENTITY_KEY) || '').trim(); } catch (e) { return ''; }
   }
@@ -77,7 +79,12 @@
     editingMemberId: null, // 正在编辑的成员
     memberFormTags: { allergy: [], avoid: [], prefer: [] }, // 成员表单标签草稿
     editingStapleId: null, // 正在编辑的常备食材预警
-    dietCtx: null          // 冲突解决弹层上下文（见 openDietResolver）
+    dietCtx: null,          // 冲突解决弹层上下文（见 openDietResolver）
+    auditType: 'all',       // 追溯筛选：操作类型（all=全部）
+    auditKeyword: '',       // 追溯筛选：关键字（匹配类型名/时间/详情文本）
+    auditFrom: '',          // 追溯筛选：起始日期（含，YYYY-MM-DD）
+    auditTo: '',            // 追溯筛选：截止日期（含，YYYY-MM-DD）
+    auditShown: AUDIT_PAGE  // 追溯分页：当前已展开到的条数
   };
 
   // ---------- 小工具 ----------
@@ -2300,117 +2307,159 @@
     'history.prune': ['清理历史痕迹', 'a-update', '🧹'],
     'data.import': ['导入数据', 'a-update', '⬆️']
   };
-  function renderAudit() {
-    var entries = store.auditEntries().slice(0, 100);
-    var nameOf = {};
-    store.listItems(true).forEach(function (it) { nameOf[it.id] = it.name; });
-
-    $('#auditList').innerHTML = entries.length ? entries.map(function (e) {
-      var meta = AUDIT_META[e.action] || [e.action, '', '•'];
-      var d = e.detail || {};
-      var lines = [];
-      if (d.name) lines.push(esc(d.name));
-      if (d.source) {
-        var srcLabel = { consume: '吃完补货', discard: '丢弃补货', manual: '手动', plan: '方案页带入', staple: '常备预警' }[d.source] || d.source;
-        lines.push('来源：' + esc(String(d.source).indexOf('restock:') === 0 ? '待购购买录入'
-          : String(d.source).indexOf('mealplan:') === 0 ? '用餐计划' : srcLabel));
-      }
-      if (d.eventType) lines.push(esc(EVENT_LABELS[d.eventType] || d.eventType) + (d.at ? ' @ ' + d.at : ''));
-      if (d.planType || d.title) lines.push(esc(d.title || d.planType));
-      if (d.date) lines.push('用餐日期：' + esc(d.date));
-      if (d.memberNames && d.memberNames.length) lines.push('就餐成员：' + d.memberNames.map(esc).join('、'));
-      if (d.dietAck) {
-        if (d.dietAck.blockers && d.dietAck.blockers.length) lines.push('已确认过敏风险：' + d.dietAck.blockers.map(esc).join('；'));
-        if (d.dietAck.warnings && d.dietAck.warnings.length) lines.push('已确认忌口：' + d.dietAck.warnings.map(esc).join('；'));
-      }
-      if (d.itemNames && d.itemNames.length) lines.push('食材：' + d.itemNames.map(function (n) { return esc(n); }).join('、'));
-      if (d.recorded && d.recorded.length) {
-        lines.push('记录：' + d.recorded.map(function (r) {
-          return esc(r.name) + '·' + esc(EVENT_LABELS[r.event] || r.event);
-        }).join('，'));
-      }
-      if (d.qty) lines.push('数量：' + esc(d.qty));
-      if (d.note) lines.push('备注：' + esc(d.note));
-      if (e.action === 'staple.add') lines.push('常备数量：' + (d.minQty != null ? d.minQty + ' 份' : '—'));
-      if (e.action === 'staple.alert') {
-        lines.push('在库 ' + d.inStock + ' 份 < 常备 ' + d.minQty + ' 份，已生成待购项（建议购买 ' + d.suggestedQty + ' 份）');
-      }
-      if (e.action === 'staple.alert.update') {
-        lines.push('在库 ' + d.inStock + ' 份 / 常备 ' + d.minQty + ' 份，待购建议量 ' +
-          esc(d.qtyFrom || '—') + ' → ' + esc(d.qtyTo || ''));
-      }
-      if (e.action === 'staple.resolve') {
-        lines.push('在库回升至 ' + d.inStock + ' 份（常备 ' + d.minQty + ' 份），自动待购项已撤下');
-      }
-      if (e.action === 'staple.remove' && d.withdrawnShopping) {
-        lines.push('一并撤下待认领的自动待购项 ' + d.withdrawnShopping + ' 条');
-      }
-      if (d.assignee) lines.push('负责人：' + esc(d.assignee));
-      if (e.action === 'shopping.claim') lines.push('认领到：' + esc(d.to || ''));
-      if (e.action === 'shopping.transfer') {
-        lines.push('转交：' + esc(d.from || '待认领') + ' → ' + esc(d.to || ''));
-      }
-      if (e.action === 'shopping.release') lines.push('取消认领（原负责人：' + esc(d.from || '—') + '），回到待认领');
-      if (e.action === 'shopping.add' && d.status === 'unclaimed') lines.push('状态：待认领');
-      if (e.action === 'history.prune') {
-        lines.push('删除旧操作流水 ' + (d.droppedAudit || 0) + ' 条、字段修改快照 ' +
-          (d.revisionsDropped || 0) + ' 份（库存与期限事件未删除；保留最近 ' +
-          (d.keepAudit || 500) + ' 条流水）');
-      }
-      if (d.itemId && e.action === 'shopping.complete') {
-        var linked = store.getItem(d.itemId);
-        lines.push(linked ? '已关联新库存：' + esc(linked.name) : '关联库存已删除');
-      }
-      if (e.action === 'shopping.update' && d.changes) {
-        var SHOP_LABELS = { name: '名称', categoryId: '分类', qty: '数量', note: '备注' };
-        Object.keys(d.changes).forEach(function (k) {
-          var c = d.changes[k];
-          lines.push((SHOP_LABELS[k] || k) + '：' + esc(short(c.from)) + ' → ' + esc(short(c.to)));
-        });
-      }
-      if (e.action === 'mealplan.update' && d.changes) {
-        var MP_LABELS = { name: '名称', date: '用餐日期', items: '食材', members: '就餐成员' };
-        Object.keys(d.changes).forEach(function (k) {
-          var c = d.changes[k];
-          var fmt = function (v) { return Array.isArray(v) ? (v.join('、') || '（无）') : short(v); };
-          lines.push((MP_LABELS[k] || k) + '：' + esc(fmt(c.from)) + ' → ' + esc(fmt(c.to)));
-        });
-      }
-      if (d.changes && e.action !== 'shopping.update' && e.action !== 'mealplan.update') {
-        var LABELS = { name: '名称', categoryId: '分类', purchaseDate: '购买日期', packageType: '包装', location: '位置', note: '备注', minQty: '常备数量' };
-        Object.keys(d.changes).forEach(function (k) {
-          var c = d.changes[k];
-          lines.push((LABELS[k] || k) + '：' + esc(short(c.from)) + ' → ' + esc(short(c.to)));
-        });
-      }
-      if (d.itemIds && d.itemIds.length) lines.push('涉及 ' + d.itemIds.length + ' 样食材');
-      if (e.action === 'member.add') {
-        if (d.allergies && d.allergies.length) lines.push('过敏：' + d.allergies.map(function (t) { return esc(FreshDiet.tagLabel(t)); }).join('、'));
-        if (d.avoids && d.avoids.length) lines.push('忌口：' + d.avoids.map(function (t) { return esc(FreshDiet.tagLabel(t)); }).join('、'));
-        if (d.prefers && d.prefers.length) lines.push('偏好：' + d.prefers.map(function (t) { return esc(FreshDiet.tagLabel(t)); }).join('、'));
-      }
-      if (e.action === 'member.update' && d.changes) {
-        var MEMBER_LABELS = {
-          name: '姓名', note: '备注',
-          allergyTags: '过敏', avoidTags: '忌口', preferTags: '偏好'
+  // 单条流水的详情行（纯文本；渲染时统一转义，关键字筛选也基于这份文本，
+  // 保证“看到的就能搜到”）
+  function auditLines(e) {
+    var d = e.detail || {};
+    var lines = [];
+    if (d.name) lines.push(String(d.name));
+    if (d.source) {
+      var srcLabel = { consume: '吃完补货', discard: '丢弃补货', manual: '手动', plan: '方案页带入', staple: '常备预警' }[d.source] || d.source;
+      lines.push('来源：' + (String(d.source).indexOf('restock:') === 0 ? '待购购买录入'
+        : String(d.source).indexOf('mealplan:') === 0 ? '用餐计划' : srcLabel));
+    }
+    if (d.eventType) lines.push((EVENT_LABELS[d.eventType] || d.eventType) + (d.at ? ' @ ' + d.at : ''));
+    if (d.planType || d.title) lines.push(String(d.title || d.planType));
+    if (d.date) lines.push('用餐日期：' + d.date);
+    if (d.memberNames && d.memberNames.length) lines.push('就餐成员：' + d.memberNames.join('、'));
+    if (d.dietAck) {
+      if (d.dietAck.blockers && d.dietAck.blockers.length) lines.push('已确认过敏风险：' + d.dietAck.blockers.join('；'));
+      if (d.dietAck.warnings && d.dietAck.warnings.length) lines.push('已确认忌口：' + d.dietAck.warnings.join('；'));
+    }
+    if (d.itemNames && d.itemNames.length) lines.push('食材：' + d.itemNames.join('、'));
+    if (d.recorded && d.recorded.length) {
+      lines.push('记录：' + d.recorded.map(function (r) {
+        return r.name + '·' + (EVENT_LABELS[r.event] || r.event);
+      }).join('，'));
+    }
+    if (d.qty) lines.push('数量：' + d.qty);
+    if (d.note) lines.push('备注：' + d.note);
+    if (e.action === 'staple.add') lines.push('常备数量：' + (d.minQty != null ? d.minQty + ' 份' : '—'));
+    if (e.action === 'staple.alert') {
+      lines.push('在库 ' + d.inStock + ' 份 < 常备 ' + d.minQty + ' 份，已生成待购项（建议购买 ' + d.suggestedQty + ' 份）');
+    }
+    if (e.action === 'staple.alert.update') {
+      lines.push('在库 ' + d.inStock + ' 份 / 常备 ' + d.minQty + ' 份，待购建议量 ' +
+        (d.qtyFrom || '—') + ' → ' + (d.qtyTo || ''));
+    }
+    if (e.action === 'staple.resolve') {
+      lines.push('在库回升至 ' + d.inStock + ' 份（常备 ' + d.minQty + ' 份），自动待购项已撤下');
+    }
+    if (e.action === 'staple.remove' && d.withdrawnShopping) {
+      lines.push('一并撤下待认领的自动待购项 ' + d.withdrawnShopping + ' 条');
+    }
+    if (d.assignee) lines.push('负责人：' + d.assignee);
+    if (e.action === 'shopping.claim') lines.push('认领到：' + (d.to || ''));
+    if (e.action === 'shopping.transfer') {
+      lines.push('转交：' + (d.from || '待认领') + ' → ' + (d.to || ''));
+    }
+    if (e.action === 'shopping.release') lines.push('取消认领（原负责人：' + (d.from || '—') + '），回到待认领');
+    if (e.action === 'shopping.add' && d.status === 'unclaimed') lines.push('状态：待认领');
+    if (e.action === 'history.prune') {
+      lines.push('删除旧操作流水 ' + (d.droppedAudit || 0) + ' 条、字段修改快照 ' +
+        (d.revisionsDropped || 0) + ' 份（库存与期限事件未删除；保留最近 ' +
+        (d.keepAudit || 500) + ' 条流水）');
+    }
+    if (d.itemId && e.action === 'shopping.complete') {
+      var linked = store.getItem(d.itemId);
+      lines.push(linked ? '已关联新库存：' + linked.name : '关联库存已删除');
+    }
+    if (e.action === 'shopping.update' && d.changes) {
+      var SHOP_LABELS = { name: '名称', categoryId: '分类', qty: '数量', note: '备注' };
+      Object.keys(d.changes).forEach(function (k) {
+        var c = d.changes[k];
+        lines.push((SHOP_LABELS[k] || k) + '：' + short(c.from) + ' → ' + short(c.to));
+      });
+    }
+    if (e.action === 'mealplan.update' && d.changes) {
+      var MP_LABELS = { name: '名称', date: '用餐日期', items: '食材', members: '就餐成员' };
+      Object.keys(d.changes).forEach(function (k) {
+        var c = d.changes[k];
+        var fmt = function (v) { return Array.isArray(v) ? (v.join('、') || '（无）') : short(v); };
+        lines.push((MP_LABELS[k] || k) + '：' + fmt(c.from) + ' → ' + fmt(c.to));
+      });
+    }
+    if (d.changes && e.action !== 'shopping.update' && e.action !== 'mealplan.update') {
+      var LABELS = { name: '名称', categoryId: '分类', purchaseDate: '购买日期', packageType: '包装', location: '位置', note: '备注', minQty: '常备数量' };
+      Object.keys(d.changes).forEach(function (k) {
+        var c = d.changes[k];
+        lines.push((LABELS[k] || k) + '：' + short(c.from) + ' → ' + short(c.to));
+      });
+    }
+    if (d.itemIds && d.itemIds.length) lines.push('涉及 ' + d.itemIds.length + ' 样食材');
+    if (e.action === 'member.add') {
+      if (d.allergies && d.allergies.length) lines.push('过敏：' + d.allergies.map(function (t) { return FreshDiet.tagLabel(t); }).join('、'));
+      if (d.avoids && d.avoids.length) lines.push('忌口：' + d.avoids.map(function (t) { return FreshDiet.tagLabel(t); }).join('、'));
+      if (d.prefers && d.prefers.length) lines.push('偏好：' + d.prefers.map(function (t) { return FreshDiet.tagLabel(t); }).join('、'));
+    }
+    if (e.action === 'member.update' && d.changes) {
+      var MEMBER_LABELS = {
+        name: '姓名', note: '备注',
+        allergyTags: '过敏', avoidTags: '忌口', preferTags: '偏好'
+      };
+      Object.keys(d.changes).forEach(function (k) {
+        var c = d.changes[k];
+        var fmtM = function (v) {
+          if (Array.isArray(v)) return v.length ? v.map(function (t) { return FreshDiet.tagLabel(t); }).join('、') : '（无）';
+          return v || '（空）';
         };
-        Object.keys(d.changes).forEach(function (k) {
-          var c = d.changes[k];
-          var fmt = function (v) {
-            if (Array.isArray(v)) return v.length ? v.map(function (t) { return FreshDiet.tagLabel(t); }).join('、') : '（无）';
-            return v || '（空）';
-          };
-          lines.push((MEMBER_LABELS[k] || k) + '：' + esc(short(fmt(c.from))) + ' → ' + esc(short(fmt(c.to))));
-        });
+        lines.push((MEMBER_LABELS[k] || k) + '：' + short(fmtM(c.from)) + ' → ' + short(fmtM(c.to)));
+      });
+    }
+    return lines;
+  }
+
+  // 流水的本地日历日（YYYY-MM-DD）：时间范围筛选按用户看到的日期比较
+  function auditDay(iso) {
+    var d = new Date(iso);
+    if (isNaN(d)) return String(iso || '').slice(0, 10);
+    return FreshEngine.isoDate(d);
+  }
+
+  function renderAudit() {
+    var all = store.auditEntries();
+    var kw = state.auditKeyword.trim().toLowerCase();
+    var filtering = state.auditType !== 'all' || !!kw || !!state.auditFrom || !!state.auditTo;
+    // 先为每条流水备好 类型标签/详情行/可检索文本，再统一筛选、分批渲染
+    var models = all.map(function (e) {
+      var meta = AUDIT_META[e.action] || [e.action, '', '•'];
+      var lines = auditLines(e);
+      return { e: e, meta: meta, lines: lines,
+        text: meta[0] + '\n' + fmtDateTime(e.at) + '\n' + lines.join('\n') };
+    }).filter(function (m) {
+      if (state.auditType !== 'all' && m.e.action !== state.auditType) return false;
+      if (state.auditFrom || state.auditTo) {
+        var day = auditDay(m.e.at);
+        if (state.auditFrom && day < state.auditFrom) return false;
+        if (state.auditTo && day > state.auditTo) return false;
       }
-      var restoreBtn = e.action === 'item.remove' && d.itemId && store.getItem(d.itemId) && store.getItem(d.itemId).removed
-        ? ' <button class="tl-undo" data-restore="' + esc(d.itemId) + '">恢复该记录</button>' : '';
-      return '<div class="audit-item ' + meta[1] + '">' +
-        '<div class="audit-top"><span class="audit-action">' + meta[2] + ' ' + meta[0] + '</span>' +
-        '<span class="audit-time">' + fmtDateTime(e.at) + '</span></div>' +
-        (lines.length ? '<div class="audit-detail">' + lines.join('<br>') + restoreBtn + '</div>' : (restoreBtn ? restoreBtn : '')) +
-      '</div>';
-    }).join('') : '<p class="empty-hint">暂无操作记录。</p>';
+      if (kw && m.text.toLowerCase().indexOf(kw) === -1) return false;
+      return true;
+    });
+    var shown = models.slice(0, state.auditShown);
+
+    $('#auditSummary').textContent = !models.length ? '' : (filtering
+      ? '符合筛选 ' + models.length + ' 条（全部共 ' + all.length + ' 条）'
+      : '共 ' + all.length + ' 条记录');
+
+    $('#auditList').innerHTML = !models.length
+      ? '<p class="empty-hint">' + (all.length ? '没有符合筛选条件的记录，可调整条件或点「重置」。' : '暂无操作记录。') + '</p>'
+      : shown.map(function (m) {
+        var e = m.e;
+        var restoreBtn = e.action === 'item.remove' && e.detail && e.detail.itemId &&
+          store.getItem(e.detail.itemId) && store.getItem(e.detail.itemId).removed
+          ? ' <button class="tl-undo" data-restore="' + esc(e.detail.itemId) + '">恢复该记录</button>' : '';
+        return '<div class="audit-item ' + m.meta[1] + '">' +
+          '<div class="audit-top"><span class="audit-action">' + m.meta[2] + ' ' + esc(m.meta[0]) + '</span>' +
+          '<span class="audit-time">' + fmtDateTime(e.at) + '</span></div>' +
+          (m.lines.length ? '<div class="audit-detail">' + m.lines.map(esc).join('<br>') + restoreBtn + '</div>' : (restoreBtn ? restoreBtn : '')) +
+        '</div>';
+      }).join('');
+
+    var rest = models.length - shown.length;
+    var moreBtn = $('#auditMore');
+    moreBtn.hidden = rest <= 0;
+    if (rest > 0) moreBtn.textContent = '加载更多（还有 ' + rest + ' 条）';
 
     $$('#auditList [data-restore]').forEach(function (b) {
       b.addEventListener('click', function () {
@@ -2424,6 +2473,46 @@
   function short(v) {
     v = String(v == null || v === '' ? '（空）' : v);
     return v.length > 18 ? v.slice(0, 18) + '…' : v;
+  }
+
+  // ---------- 追溯筛选：类型下拉按 AUDIT_META 分组生成；筛选/翻页只改 state 后重渲 ----------
+  var AUDIT_GROUPS = [
+    ['item', '食材'], ['event', '期限事件'], ['plan', '方案'],
+    ['shopping', '待购补货'], ['mealplan', '用餐计划'], ['staple', '常备预警'],
+    ['member', '家庭成员'], ['data', '数据']
+  ];
+  function auditGroupOf(action) {
+    var p = String(action).split('.')[0];
+    return (p === 'history' || p === 'data') ? 'data' : p;
+  }
+  function setupAuditFilter() {
+    var sel = $('#auditType');
+    var html = '<option value="all">全部类型</option>';
+    AUDIT_GROUPS.forEach(function (g) {
+      var actions = Object.keys(AUDIT_META).filter(function (a) { return auditGroupOf(a) === g[0]; });
+      if (!actions.length) return;
+      html += '<optgroup label="' + g[1] + '">' + actions.map(function (a) {
+        return '<option value="' + a + '">' + esc(AUDIT_META[a][0]) + '</option>';
+      }).join('') + '</optgroup>';
+    });
+    sel.innerHTML = html;
+
+    // 任何筛选条件变化都回到第一批，避免出现“筛选后落在空页”
+    function applyFilter() { state.auditShown = AUDIT_PAGE; renderAudit(); }
+    sel.addEventListener('change', function () { state.auditType = sel.value; applyFilter(); });
+    $('#auditKeyword').addEventListener('input', function () { state.auditKeyword = this.value; applyFilter(); });
+    $('#auditFrom').addEventListener('change', function () { state.auditFrom = this.value; applyFilter(); });
+    $('#auditTo').addEventListener('change', function () { state.auditTo = this.value; applyFilter(); });
+    $('#auditReset').addEventListener('click', function () {
+      state.auditType = 'all'; state.auditKeyword = ''; state.auditFrom = ''; state.auditTo = '';
+      sel.value = 'all';
+      $('#auditKeyword').value = ''; $('#auditFrom').value = ''; $('#auditTo').value = '';
+      applyFilter();
+    });
+    $('#auditMore').addEventListener('click', function () {
+      state.auditShown += AUDIT_PAGE;
+      renderAudit();
+    });
   }
 
   // ---------- 设置：导入导出/演示/清空 ----------
@@ -2514,7 +2603,12 @@
     window.scrollTo(0, 0);
   }
 
+  var inited = false;
   function init() {
+    // 幂等：DOMContentLoaded 被重复触发（如测试环境在自动派发外又手动派发）时，
+    // 重复初始化会让匿名监听器注册两次、一次点击生效两次，初始化只允许一次
+    if (inited) return;
+    inited = true;
     // 导航
     $$('.tab[data-view]').forEach(function (t) {
       t.addEventListener('click', function () { switchView(t.getAttribute('data-view')); });
@@ -2529,6 +2623,9 @@
         renderInventory();
       });
     });
+
+    // 追溯筛选与翻页
+    setupAuditFilter();
 
     // 表单
     $('#itemForm').addEventListener('submit', saveForm);

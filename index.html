@@ -103,7 +103,20 @@
       <p class="hint">所有修改、期限事件、方案应用都会记录在此，可逐条撤销，不会物理删除。
         记录过多导致存储写满时，可在 ⚙️ 设置里「清理历史痕迹」瘦身（只删旧流水与旧快照，不删库存）。</p>
     </div>
+    <div class="audit-filter" id="auditFilter">
+      <div class="af-row">
+        <select id="auditType" aria-label="按操作类型筛选"></select>
+        <input id="auditKeyword" type="search" placeholder="关键字：名称 / 备注 / 负责人" aria-label="按关键字筛选">
+      </div>
+      <div class="af-row">
+        <label class="af-date">从 <input type="date" id="auditFrom"></label>
+        <label class="af-date">至 <input type="date" id="auditTo"></label>
+        <button class="chip muted" id="auditReset" type="button">重置</button>
+      </div>
+    </div>
+    <div class="audit-summary" id="auditSummary"></div>
     <div id="auditList" class="audit-list"></div>
+    <button id="auditMore" class="audit-more" type="button" hidden>加载更多</button>
   </section>
 
 </main>
