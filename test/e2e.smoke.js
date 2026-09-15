@@ -130,6 +130,11 @@ function check(name, cond) {
   check('追溯包含方案应用', /应用方案/.test(auditText));
   check('追溯包含事件记录', /记录期限事件/.test(auditText));
   check('追溯包含撤销', /撤销事件/.test(auditText));
+  // 方案流水必须列出具体食材名（而不是只有“涉及 N 样食材”），才能按食材名搜到
+  const applyNames = (window.__store.auditEntries().find(e => e.action === 'plan.apply') || { detail: {} }).detail.itemNames || [];
+  const applyEl = $$('#auditList .audit-item').find(el => /应用方案/.test(el.textContent));
+  check('方案流水列出所用食材名', applyNames.length > 0 && !!applyEl &&
+    applyNames.every(n => applyEl.textContent.includes(n)));
 
   // 7. 录入新食材（模拟表单）
   $('#btnAdd').click();
@@ -160,7 +165,9 @@ function check(name, cond) {
       items: [{ id: 'oldb1', name: '一月的旧食材', purchaseDate: '2026-01-05', packageType: 'sealed', location: 'fridge' }],
       audit: [
         { id: 'oldh1', seq: 9001, at: '2026-01-05T10:00:00.000Z', action: 'item.create', detail: { name: '一月的旧食材' } },
-        { id: 'oldh2', seq: 9002, at: '2026-01-06T10:00:00.000Z', action: 'event.add', detail: { name: '一月的旧食材', eventType: 'open' } }
+        { id: 'oldh2', seq: 9002, at: '2026-01-06T10:00:00.000Z', action: 'event.add', detail: { name: '一月的旧食材', eventType: 'open' } },
+        // 旧格式的方案流水：只有 itemIds 没有 itemNames，界面应按 id 反查出名字
+        { id: 'oldh3', seq: 9003, at: '2026-01-07T10:00:00.000Z', action: 'plan.apply', detail: { title: '旧备份方案', itemIds: ['oldb1'] } }
       ]
     }, true);
   } catch (e) { importErr = e; }
@@ -849,6 +856,13 @@ function check(name, cond) {
   fire($('#auditType'), 'change');
   check('关键字筛选命中详情文本', $$('#auditList .audit-item').length > 0 &&
     $$('#auditList .audit-item').every(el => /同日测试虾/.test(el.textContent)));
+  // 按食材名也能搜到用过它的方案记录（方案流水列出了具体食材名）
+  const planIngredient = (window.__store.auditEntries()
+    .find(e => e.action === 'plan.apply' && e.detail.itemNames && e.detail.itemNames.length) || { detail: {} }).detail.itemNames[0];
+  $('#auditKeyword').value = planIngredient;
+  fire($('#auditKeyword'), 'input');
+  check('按食材名搜到方案应用记录', $$('#auditList .audit-item')
+    .some(el => /应用方案/.test(el.textContent) && el.textContent.includes(planIngredient)));
   $('#auditKeyword').value = '不存在的食材xyz';
   fire($('#auditKeyword'), 'input');
   check('无结果关键字给出空态提示', $$('#auditList .audit-item').length === 0 &&
@@ -862,9 +876,13 @@ function check(name, cond) {
   fire($('#auditFrom'), 'change');
   $('#auditTo').value = '2026-01-31';
   fire($('#auditTo'), 'change');
-  check('时间范围筛选只命中一月旧记录', $$('#auditList .audit-item').length === 2 &&
+  check('时间范围筛选只命中一月旧记录', $$('#auditList .audit-item').length === 3 &&
     $$('#auditList .audit-item').every(el => /一月的旧食材/.test(el.textContent)));
   check('范围外记录被过滤', !/黄瓜/.test($('#auditList').textContent));
+  // 旧格式方案流水（只有 itemIds）按 id 反查出食材名，而不是只写“涉及 N 样食材”
+  const oldPlanEl = $$('#auditList .audit-item').find(el => el.textContent.includes('旧备份方案'));
+  check('旧方案流水反查出食材名', !!oldPlanEl && oldPlanEl.textContent.includes('一月的旧食材') &&
+    !/涉及 \d+ 样食材/.test(oldPlanEl.textContent));
 
   // 重置：清空全部筛选并回到第一批
   $('#auditReset').click();

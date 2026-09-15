@@ -766,6 +766,8 @@
       log('plan.apply', {
         planType: plan.type, title: plan.title,
         itemIds: (plan.used || []).map(function (u) { return u.id; }),
+        // 名字快照随流水保存：之后食材改名/删除，追溯里仍能看到当时用了什么
+        itemNames: (plan.used || []).map(function (u) { return u.name; }),
         memberNames: meta && Array.isArray(meta.memberNames) ? meta.memberNames : [],
         dietAck: meta && meta.diet ? meta.diet : null
       });

@@ -2386,7 +2386,18 @@
         lines.push((LABELS[k] || k) + '：' + short(c.from) + ' → ' + short(c.to));
       });
     }
-    if (d.itemIds && d.itemIds.length) lines.push('涉及 ' + d.itemIds.length + ' 样食材');
+    // 方案流水：新数据由上面的 itemNames 行列出食材名；旧流水只存了 itemIds，
+    // 按记录反查名称（getItem 含已软删记录），查不到的按数量兜底
+    if (d.itemIds && d.itemIds.length && !(d.itemNames && d.itemNames.length)) {
+      var resolvedNames = d.itemIds.map(function (id) {
+        var it = store.getItem(id);
+        return it ? it.name : null;
+      }).filter(Boolean);
+      lines.push(resolvedNames.length
+        ? '食材：' + resolvedNames.join('、') +
+          (resolvedNames.length < d.itemIds.length ? ' 等 ' + d.itemIds.length + ' 样' : '')
+        : '涉及 ' + d.itemIds.length + ' 样食材');
+    }
     if (e.action === 'member.add') {
       if (d.allergies && d.allergies.length) lines.push('过敏：' + d.allergies.map(function (t) { return FreshDiet.tagLabel(t); }).join('、'));
       if (d.avoids && d.avoids.length) lines.push('忌口：' + d.avoids.map(function (t) { return FreshDiet.tagLabel(t); }).join('、'));

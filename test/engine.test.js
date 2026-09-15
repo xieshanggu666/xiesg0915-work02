@@ -309,6 +309,9 @@ test('applyPlan 为每个食材写入事件并记录 plan.apply', () => {
   assert.equal(store.getItem(t.id).events.at(-1).type, 'cook');
   assert.equal(store.getItem(e.id).events.at(-1).type, 'cook');
   assert.equal(store.auditEntries()[0].action, 'plan.apply');
+  // 流水带食材名快照：之后改名/删除食材，追溯里仍能看到当时用了什么
+  assert.deepEqual(store.auditEntries()[0].detail.itemNames.sort(), ['番茄', '鸡蛋'].sort());
+  assert.deepEqual(store.auditEntries()[0].detail.itemIds.sort(), [t.id, e.id].sort());
 });
 
 test('软删除与恢复保留历史', () => {
